@@ -4,7 +4,7 @@ import XCTest
 final class ParentOperationTests: XCTestCase {
     let delay: Double = 0.1
 
-    func testParentOperationCounting() async throws {
+    func testCountingToCompletion() async throws {
         let input = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
         let counter = Counter(numbers: input, delay: delay)
@@ -29,12 +29,14 @@ final class ParentOperationTests: XCTestCase {
         XCTAssertNil(thrown)
     }
 
-    func testParentOperationCountingCanceledOperation() async throws {
+    func testCountingCancelingOperation() async throws {
+        let exp = expectation(description: #function)
         let input = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
         let counter = Counter(numbers: input, delay: delay)
         counter.start()
 
+        // wrap in task so for loop does not block the next section
         Task {
             for await progress in await counter.status {
                 print("Progress: \(String(format: "%.2f", progress.fractionCompleted))")
@@ -50,9 +52,13 @@ final class ParentOperationTests: XCTestCase {
             let output = try await counter.value
             print("Output: \(output)")
             XCTFail("Output should not be sent")
+            exp.fulfill()
         } catch {
             thrown = error
+            exp.fulfill()
         }
+
+        wait(for: [exp], timeout: delay * Double(input.count) + 1.0)
 
         XCTAssertNotNil(thrown)
         guard let error = thrown else {
@@ -62,7 +68,9 @@ final class ParentOperationTests: XCTestCase {
         XCTAssertTrue(error is CancellationError)
     }
 
-    func testParentOperationCountingCanceledTask() async throws {
+    func testCountingCancelingTask() async throws {
+        let exp = expectation(description: #function)
+
         let input = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
         let counter = Counter(numbers: input, delay: delay) { index in
@@ -70,13 +78,12 @@ final class ParentOperationTests: XCTestCase {
         }
         counter.start()
 
+        // wrap in task so for loop does not block the next section
         Task {
             for await progress in await counter.status {
                 print("Progress: \(String(format: "%.2f", progress.fractionCompleted))")
             }
         }
-
-        let exp = expectation(description: #function)
 
         Task {
             var thrown: Error? = nil
@@ -84,17 +91,18 @@ final class ParentOperationTests: XCTestCase {
                 let output = try await counter.value
                 print("Output: \(output)")
                 XCTFail("Output should not be sent")
+                exp.fulfill()
             } catch {
                 thrown = error
+                exp.fulfill()
             }
+
             XCTAssertNotNil(thrown)
             guard let error = thrown else {
                 XCTFail("Error should be thrown")
                 return
             }
             XCTAssertTrue(error is CancellationError)
-
-            exp.fulfill()
         }
 
         wait(for: [exp], timeout: delay * Double(input.count) + 1.0)
@@ -157,6 +165,19 @@ struct NumberProvider {
             }
 
             return try await task.value
+        }
+    }
+}
+
+struct Worker {
+    func work() {
+        let double: (Int) async throws -> Int = { value in
+            try await Task.sleep(seconds: 1.0)
+            return value * 2
+        }
+        Task {
+            let result = try await double(2)
+            print("Result: \(result)")
         }
     }
 }

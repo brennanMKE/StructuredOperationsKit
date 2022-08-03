@@ -29,32 +29,31 @@ class Counter: ParentOperation<Progress, Int, Error> {
 
     public override func run(done: @escaping AsyncDoneClosure) {
         Task {
-            try await withTaskCancellationHandler {
-                defer {
-                    done()
-                }
+            defer {
+                done()
+            }
 
-                var index = 0
-                var total = 0
-                let progress = Progress(totalUnitCount: Int64(numbers.count))
+            var index = 0
+            var total = 0
+            let progress = Progress(totalUnitCount: Int64(numbers.count))
 
-                while index < numbers.count && !isCancelled {
-                    try await Task.sleep(seconds: delay)
-                    total += numbers[index]
-                    if let condition = condition, condition(index) {
-                        abort()
-//                        throw CancellationError()
-                    }
+            while index < numbers.count && !isCancelled {
+                try await Task.sleep(seconds: delay)
+                total += numbers[index]
+                if let condition = condition, condition(index) {
+                    await cancelTask()
+                } else {
                     progress.completedUnitCount = Int64(index + 1)
                     try await report(progress)
-                    await Task.yield()
-                    index += 1
                 }
-
-                await finish(.success(total))
-            } onCancel: {
-                cancel()
+                await Task.yield()
+                index += 1
             }
+
+            if !isCancelled {
+                await finish(.success(total))
+            }
+            print("end")
         }
     }
 

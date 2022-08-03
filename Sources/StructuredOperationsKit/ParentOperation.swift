@@ -22,40 +22,61 @@ open class ParentOperation<Status, Success, Failure: Error>: Operation, AsyncRun
     actor Child {
         var parent: Cancellable? = nil
         var statusChannel: AsyncChannel<Status>? = nil
+        var valueTask: Task<Success, Error>? = nil
         var valueContinuation: CheckedContinuation<Success, Error>? = nil
         var result: Result<Success, Failure>? = nil
         var isCancelled = false
 
         var status: AsyncChannel<Status> {
-            if let channel = statusChannel {
-                if result != nil {
-                    Task {
-                        await channel.finish()
-                    }
-                }
-                return channel
+            let channel: AsyncChannel<Status>
+            if let statusChannel = statusChannel {
+                channel = statusChannel
             } else {
-                let channel = AsyncChannel<Status>()
+                channel = AsyncChannel<Status>()
                 statusChannel = channel
-                if result != nil {
-                    Task {
-                        await channel.finish()
-                    }
-                }
-                return channel
             }
+
+            if result != nil {
+                Task {
+                    await channel.finish()
+                }
+            }
+            return channel
         }
 
         var value: Success {
             get async throws {
-                try await withCheckedThrowingContinuation { continuation in
-                    if isCancelled {
-                        continuation.resume(throwing: CancellationError())
-                    } else if let result = result {
-                        send(result: result, continuation: continuation)
-                    } else {
-                        valueContinuation = continuation
-                    }
+                try await createValueTask().value
+            }
+        }
+
+        private func createValueTask() -> Task<Success, Error> {
+            let task = Task {
+                try await withTaskCancellationHandler(operation: operation, onCancel: onCancel)
+            }
+            valueTask = task
+            return task
+        }
+
+        private func body(continuation: CheckedContinuation<Success, Error>) {
+            if isCancelled {
+                continuation.resume(throwing: CancellationError())
+            } else if let result = result {
+                send(result: result, continuation: continuation)
+            } else {
+                valueContinuation = continuation
+            }
+        }
+
+        private func operation() async throws -> Success {
+            try await withCheckedThrowingContinuation(body)
+        }
+
+        @Sendable
+        private func onCancel() {
+            Task.detached {
+                if let parent = await self.parent {
+                    parent.cancel()
                 }
             }
         }
@@ -83,10 +104,15 @@ open class ParentOperation<Status, Success, Failure: Error>: Operation, AsyncRun
         }
 
         func cancel() async {
-            guard !isCancelled else { return }
+            guard !isCancelled else {
+                return
+            }
             isCancelled = true
             if let channel = statusChannel {
                 await channel.finish()
+            }
+            if let task = valueTask {
+                task.cancel()
             }
             if let continuation = valueContinuation {
                 continuation.resume(throwing: CancellationError())
@@ -185,18 +211,17 @@ open class ParentOperation<Status, Success, Failure: Error>: Operation, AsyncRun
 
     /// Cancel operation and task
     public override func cancel() {
-        guard state != .cancelled else { return }
+        guard state != .cancelled else {
+            return
+        }
         transition(to: .cancelled)
         Task {
             await child.cancel()
         }
     }
 
-    /// Aborts task which also cancels operation
-    public func abort() {
-        Task {
-            await child.cancel()
-        }
+    public func cancelTask() async {
+        await child.cancel()
     }
 
     public func report(_ status: Status) async throws {

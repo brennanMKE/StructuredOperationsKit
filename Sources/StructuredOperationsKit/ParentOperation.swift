@@ -22,7 +22,6 @@ open class ParentOperation<Status, Success, Failure: Error>: Operation, AsyncRun
     actor Child {
         var parent: Cancellable? = nil
         var statusChannel: AsyncChannel<Status>? = nil
-        var valueTask: Task<Success, Error>? = nil
         var valueContinuation: CheckedContinuation<Success, Error>? = nil
         var result: Result<Success, Failure>? = nil
         var isCancelled = false
@@ -46,37 +45,14 @@ open class ParentOperation<Status, Success, Failure: Error>: Operation, AsyncRun
 
         var value: Success {
             get async throws {
-                try await createValueTask().value
-            }
-        }
-
-        private func createValueTask() -> Task<Success, Error> {
-            let task = Task {
-                try await withTaskCancellationHandler(operation: operation, onCancel: onCancel)
-            }
-            valueTask = task
-            return task
-        }
-
-        private func body(continuation: CheckedContinuation<Success, Error>) {
-            if isCancelled {
-                continuation.resume(throwing: CancellationError())
-            } else if let result = result {
-                send(result: result, continuation: continuation)
-            } else {
-                valueContinuation = continuation
-            }
-        }
-
-        private func operation() async throws -> Success {
-            try await withCheckedThrowingContinuation(body)
-        }
-
-        @Sendable
-        private func onCancel() {
-            Task.detached {
-                if let parent = await self.parent {
-                    parent.cancel()
+                try await withCheckedThrowingContinuation { continuation in
+                    if isCancelled {
+                        continuation.resume(throwing: CancellationError())
+                    } else if let result = result {
+                        send(result: result, continuation: continuation)
+                    } else {
+                        valueContinuation = continuation
+                    }
                 }
             }
         }
@@ -110,9 +86,6 @@ open class ParentOperation<Status, Success, Failure: Error>: Operation, AsyncRun
             isCancelled = true
             if let channel = statusChannel {
                 await channel.finish()
-            }
-            if let task = valueTask {
-                task.cancel()
             }
             if let continuation = valueContinuation {
                 continuation.resume(throwing: CancellationError())

@@ -35,8 +35,10 @@ open class ParentOperation<Status, Success, Failure: Error>: Operation, AsyncRun
                 statusChannel = channel
             }
 
-            if result != nil {
+            // finish channel if there is already a result
+            if result != nil || isCancelled {
                 Task {
+                    // finish will cause the call to next() to end the sequence
                     await channel.finish()
                 }
             }
@@ -47,16 +49,20 @@ open class ParentOperation<Status, Success, Failure: Error>: Operation, AsyncRun
             get async throws {
                 try await withCheckedThrowingContinuation { continuation in
                     if isCancelled {
+                        // immediately cancel is already cancelled
                         continuation.resume(throwing: CancellationError())
                     } else if let result = result {
+                        // immediately send result if it is available
                         send(result: result, continuation: continuation)
                     } else {
+                        // capture contination to use later
                         valueContinuation = continuation
                     }
                 }
             }
         }
 
+        // set the parent to coordinate cancellation
         func setParent(parent: Cancellable) {
             self.parent = parent
         }
@@ -66,6 +72,7 @@ open class ParentOperation<Status, Success, Failure: Error>: Operation, AsyncRun
                 if let status = status {
                     try await channel.send(status)
                 } else {
+                    // nil indicates the sequence is done
                     await channel.finish()
                 }
             }
@@ -75,6 +82,7 @@ open class ParentOperation<Status, Success, Failure: Error>: Operation, AsyncRun
             if let continuation = valueContinuation {
                 send(result: result, continuation: continuation)
             } else {
+                // store result for when the value property is used
                 self.result = result
             }
         }
@@ -91,9 +99,8 @@ open class ParentOperation<Status, Success, Failure: Error>: Operation, AsyncRun
                 continuation.resume(throwing: CancellationError())
             }
             // cancels the parent operation
-            if let parent = parent {
-                parent.cancel()
-            }
+            assert(parent != nil, "Parent cannot be nil")
+            parent?.cancel()
         }
 
         private func send(result: Result<Success, Failure>, continuation: CheckedContinuation<Success, Error>) {
